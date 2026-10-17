@@ -174,6 +174,9 @@ class GeminiClient(LLMClient):
         full_content: str = ""
         calls: list[ToolCallEvent] = []
         files: list[BinaryResult] = []
+        # Gemini 3 can send a function call's thought signature on a part of its own,
+        # before the functionCall part; it belongs to the next call that lacks one.
+        pending_signature: bytes | None = None
 
         for candidate in response.candidates or ():
             pending_code_call_id: str | None = None
@@ -192,9 +195,10 @@ class GeminiClient(LLMClient):
                                 id=fc.id or str(uuid4()),
                                 name=fc.name or "",
                                 arguments=json.dumps(dict(fc.args)) if fc.args else "{}",
-                                thought_signature=part.thought_signature,
+                                thought_signature=part.thought_signature or pending_signature,
                             )
                         )
+                        pending_signature = None
                     elif part.executable_code and (call_event := GeminiServerToolCallEvent.from_executable_code(part)):
                         pending_code_call_id = call_event.id
                         await context.send(call_event)
@@ -209,6 +213,8 @@ class GeminiClient(LLMClient):
                     ):
                         await context.send(result_event)
                         pending_code_call_id = None
+                    elif part.thought_signature:
+                        pending_signature = part.thought_signature
             grounding = candidate.grounding_metadata if candidate.grounding_metadata else None
             if grounding:
                 name = grounding_tool_name(grounding)
@@ -255,6 +261,9 @@ class GeminiClient(LLMClient):
         finish_reason: str | None = None
         pending_code_call_id: str | None = None
         last_grounding_metadata: types.GroundingMetadata | None = None
+        # Gemini 3 can stream a function call's thought signature on a part of its own,
+        # before the functionCall part; it belongs to the next call that lacks one.
+        pending_signature: bytes | None = None
 
         async for chunk in stream:
             for candidate in chunk.candidates or ():
@@ -274,9 +283,10 @@ class GeminiClient(LLMClient):
                                     id=fc.id or str(uuid4()),
                                     name=fc.name or "",
                                     arguments=json.dumps(dict(fc.args)) if fc.args else "{}",
-                                    thought_signature=part.thought_signature,
+                                    thought_signature=part.thought_signature or pending_signature,
                                 )
                             )
+                            pending_signature = None
                         elif part.executable_code and (
                             call_event := GeminiServerToolCallEvent.from_executable_code(part)
                         ):
@@ -293,6 +303,8 @@ class GeminiClient(LLMClient):
                         ):
                             await context.send(result_event)
                             pending_code_call_id = None
+                        elif part.thought_signature:
+                            pending_signature = part.thought_signature
                 grounding = candidate.grounding_metadata if candidate.grounding_metadata else None
                 if grounding:
                     last_grounding_metadata = grounding
